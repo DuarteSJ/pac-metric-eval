@@ -1,2 +1,8 @@
 raw/
 skx/eps/
+results/
+gapbs/
+parsec-3.0/
+parsec-3.0.tar.gz
+parsec-build-*.log
+__pycache__/

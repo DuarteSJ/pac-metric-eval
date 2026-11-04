@@ -1,188 +1,87 @@
-# PAC modeling
+# PACT Fig. 2 on traquina
 
-> Copied from [MoatLab/PACT](https://github.com/MoatLab/PACT) `modeling/` at
-> commit `dd11678` (MIT, see `LICENSE`). Relative links to `../setup/` and
-> `../run/` refer to that repository.
+Reproduces Figure 2 ("PAC modeling") of *PACT: A Criticality-First Design for
+Tiered Memory* (ASPLOS '26): per workload and memory tier, whole-run
+LLC-stalls against LLC-misses and LLC-misses/MLP, and the per-tier fit
+`LLC-stalls = k * LLC-misses / MLP`.
 
-Scripts for collecting the perf counters used in the correlation plots of
-Figure 2 of the PACT paper (ASPLOS'26), which motivate the LLC-miss/MLP
-metric across three memory tiers.
+`pact-modeling/` is PACT's own code and data, unmodified (MoatLab/PACT
+`modeling/` at `dd11678`, MIT, see `LICENSE`). It has the paper's measurements
+(`skx/dat/r-l3_stall_skx.csv`: 96 workloads x 3 tiers, Skylake-X), but its
+collection script defines only 2 workloads, so the commands behind the 96 are
+unpublished. The scripts here run our own workload set on traquina instead.
 
----
+| file | role |
+|---|---|
+| `workloads.sh` | the workload set and each command |
+| `setup.sh` | build GAPBS + the GAP graphs, or PARSEC |
+| `collect.sh` | run every workload on every tier under `perf stat` |
+| `aggregate.py` | raw perf files -> `models.csv` (PACT's columns) |
+| `fig2.py` | Figure 2 + per-tier k and Pearson r |
 
-## Directory structure
+`fig2.py` on PACT's data gives the paper's numbers exactly (k = 238.0 /
+441.6 / 771.1; r = 0.83-0.90 for misses, 0.97-0.98 for misses/MLP):
 
-```
-modeling/
-├── run-models.sh        # collect perf counters → CSV
-├── raw/                 # created at runtime - perf stat output + models.csv
-├── skx/                 # Skylake-X reference data + gnuplot
-│   ├── dat/
-│   │   └── r-l3_stall_skx.csv   # gnuplot input (complete SKX reference)
-│   ├── eps/             # created at runtime - gnuplot writes corr.pdf here
-│   └── plot/
-│       └── corr.plot    # gnuplot script for Figure 2
-└── README.md
-```
-
----
-
-## What is being measured
-
-Each workload runs three times - once per memory tier - under `numactl --membind`:
-
-| Tier | Latency | Node variable |
-|------|---------|--------------|
-| Tier 1 | ~90ns  | `LOCAL_NODE` - local DRAM |
-| Tier 2 | ~140ns | `NUMA_NODE`  - remote NUMA |
-| Tier 3 | ~190ns | `CXL_NODE`   - CXL-emulated |
-
-Four hardware counters collected per run (single `perf stat` pass):
-
-| Counter | Role |
-|---------|------|
-| `CYCLE_ACTIVITY.STALLS_L3_MISS` | `l3_stall` |
-| `MEM_LOAD_RETIRED.L3_MISS` | `l3_miss` |
-| `OFFCORE_REQUESTS_OUTSTANDING.DEMAND_DATA_RD` | MLP numerator |
-| `OFFCORE_REQUESTS_OUTSTANDING.CYCLES_WITH_DEMAND_DATA_RD` | MLP denominator |
-
-MLP here is `OFFCORE_REQUESTS_OUTSTANDING.DEMAND_DATA_RD / ...CYCLES...`, an
-offcore-outstanding proxy used only to fit the offline model. The PACT
-*runtime* derives the slow-tier MLP from CHA/TOR occupancy counters instead
-(see `src/pmu.c`). Both estimate memory-level parallelism.
-
-Metrics written to CSV (per tier): `l3_stall`, `demand_l2_mlp` (the MLP
-above), `l3_miss`, and `l3_miss/mlp`. `run-models.sh` writes 0 to the
-`offcore_load_latency` and `lat*l3_miss/mlp` columns. These columns keep the
-format of the reference dataset in `skx/dat/`, which holds values for them.
-
-> **Note:** The counter names are those of Intel Skylake-X (SKX). `corr.plot`
-> fits the model slopes from the data file (gnuplot `fit`). Its axis ranges
-> and tier labels match the SKX reference dataset in `skx/`.
-
----
-
-## Previously gathered data - Intel Skylake-X
-
-`skx/dat/r-l3_stall_skx.csv` contains the complete reference dataset
-collected on an Intel Skylake-X server (95 workloads × 3 tiers).  
-To regenerate Figure 2 from this data:
-
-```bash
-cd skx
-gnuplot plot/corr.plot
-# output → eps/corr.pdf
+```sh
+python3 fig2.py pact-modeling/skx/dat/r-l3_stall_skx.csv --tiers "DRAM (90ns),NUMA (140ns),CXL (190ns)"
 ```
 
-Newly collected data is written to `raw/models.csv` by `run-models.sh`. Copy it to `skx/dat/r-l3_stall_skx.csv` before plotting.
+## Workloads
 
----
+| group | workloads | vs PACT's 96 |
+|---|---|---|
+| `gapbs` | bc, bfs, cc, pr, sssp, tc x kron, urand, twitter, road, web (30) | the same 30 names; GAP benchmark inputs and arguments (`benchmark/bench.mk`), fewer trials |
+| `demeter` | graph500, xsbench, btree, gups, liblinear, bwaves (SPEC 603.bwaves_s), silo (YCSB) | 1 of their 43 SPEC (bwaves_s); the rest are extra |
+| `parsec` | the same 13 PARSEC 3.0 names, native inputs | opt-in, untested build |
+| — | 42 other SPEC CPU 2017, 4 GPT-2, YCSB A-F | not available (SPEC is licensed; GPT-2/YCSB setups unpublished) |
 
-## Running workloads
+`all` = `gapbs` + `demeter` (37 workloads, 111 runs).
 
-### 1. Verify NUMA topology
+## Tiers (traquina)
 
-```bash
-numactl --hardware
+| index | tier | node | PACT |
+|---|---|---|---|
+| 1 | local DRAM | 0 | DRAM, 90 ns |
+| 2 | remote socket DRAM | 1 | NUMA, 140 ns |
+| 3 | CXL Type-3 expander | 2 | remote socket with throttled uncore, 190 ns |
+
+Workloads run on cores 0-7 (socket 0) with 8 threads, as PACT
+(`OMP_NUM_THREADS=8`), memory bound with `numactl --membind`. Inputs are
+loaded into the page cache on the tier's node first (`vmtouch`, as PACT).
+
+## Counters
+
+PACT's four, plus three for the latency column and for other MLP estimates
+(T1/T2 pairs are perf groups, so both see the same time slices):
+
+| column | events |
+|---|---|
+| `l3_stall` | `CYCLE_ACTIVITY.STALLS_L3_MISS` |
+| `l3_miss` | `MEM_LOAD_RETIRED.L3_MISS` |
+| `demand_l2_mlp` | `OFFCORE_REQUESTS_OUTSTANDING.DEMAND_DATA_RD / .CYCLES_WITH_DEMAND_DATA_RD` |
+| `offcore_load_latency` | `OFFCORE_REQUESTS_OUTSTANDING.DEMAND_DATA_RD / OFFCORE_REQUESTS.DEMAND_DATA_RD` (cycles) |
+| `l3m_mlp` | `OFFCORE_REQUESTS_OUTSTANDING.L3_MISS_DEMAND_DATA_RD / .CYCLES_WITH_L3_MISS_DEMAND_DATA_RD` |
+| `window_mlp` | `OFFCORE_REQUESTS_OUTSTANDING.L3_MISS_DEMAND_DATA_RD / cycles` |
+
+## Run (on traquina)
+
+```sh
+sudo apt install vmtouch                  # once
+./setup.sh gapbs                          # GAPBS + graphs: ~200 GB, hours
+DRY=1 ./collect.sh all                    # check the commands
+./collect.sh all                          # results/<date>/raw, then models.csv
+python3 fig2.py results/<date>/models.csv
 ```
 
-Edit `CPU_NODE`, `LOCAL_NODE`, `NUMA_NODE`, `CXL_NODE` at the top of `run-models.sh`
-to match your server.
+`collect.sh` takes groups or workload names (`./collect.sh bc-kron xsbench`),
+skips runs it already has (resume after an interruption), and records failed
+runs as `*.failed`. `aggregate.py` writes only workloads with all three tiers
+and reports runs whose counters perf multiplexed.
 
-> **Topology note.** The model spans three latency tiers (`LOCAL_NODE`,
-> `NUMA_NODE`, `CXL_NODE`), so it needs three NUMA nodes. The two-node
-> layout of [`../setup/`](../setup/) has no third tier. On a two-node
-> machine, point `NUMA_NODE` and `CXL_NODE` at the same slow node, or plot
-> the reference data in `skx/dat/` (see "Previously gathered data"). A tier
-> whose node does not exist gets zeros in its columns.
+## Status
 
-### 2. Run SPEC CPU 2017 workloads
-
-```bash
-sudo ./run-models.sh --spec
-```
-
-Runs every workload in `SPEC_WORKLOADS` × 3 tiers.
-
-### 3. Run GAPBS workloads
-
-```bash
-sudo ./run-models.sh --gapbs
-```
-
-Runs every workload in `GAPBS_WORKLOADS` × 3 tiers.  
-Graph is preloaded into the target NUMA node's page cache via `vmtouch` before each tier run.
-
-To set `PERF`, `SPEC_DIR`, `GAPBS_DIR` or `VMTOUCH`, pass them through
-`sudo env`, for example:
-
-```bash
-sudo env PERF=/path/to/perf GAPBS_DIR=/path/to/gapbs ./run-models.sh --gapbs
-```
-
-### Options and failed runs
-
-`--raw-dir DIR`, `--output FILE` and the `--*-node` options set the output
-paths and the NUMA nodes. A workload with a failed tier run gets no row in
-the CSV, and the script then prints `FAILED` and exits with status 1.
-
-### 4. Plot
-
-Copy the collected CSV to the gnuplot data folder, then run the plot:
-
-```bash
-cp raw/models.csv skx/dat/r-l3_stall_skx.csv
-cd skx && gnuplot plot/corr.plot
-# output → skx/eps/corr.pdf
-```
-
----
-
-
-## Adding or changing workloads
-
-Workloads are defined at the top of `run-models.sh` in two separate arrays.
-
-**SPEC CPU 2017** - format `"NAME|COMMAND"`:
-
-The command runs under `bash -c`. Quote a path in it with `printf %q`, so
-that a path with spaces or shell characters stays one word:
-
-```bash
-SPEC_DIR="/path/to/cpu2017/run"
-printf -v SPEC_MCF_CMD 'cd %q && ./mcf_r_base.mytest-m64 inp.in' "${SPEC_DIR}/505.mcf_r"
-printf -v SPEC_GCC_CMD 'cd %q && ./cpugcc_r_base.mytest gcc-pp.c ...' "${SPEC_DIR}/502.gcc_r"
-
-SPEC_WORKLOADS=(
-    "505.mcf_r|${SPEC_MCF_CMD}"
-    "502.gcc_r|${SPEC_GCC_CMD}"
-    # add more SPEC workloads here
-)
-```
-
-**GAPBS** - just the workload name; the run command is inside `func_run_gapbs_tier`:
-
-```bash
-GAPBS_WORKLOADS=(
-    "bc-kron"
-    # add more GAPBS workloads here (requires matching func_run_gapbs_tier logic)
-)
-```
-
-Each workload runs under `numactl --cpunodebind --membind` automatically -
-no need to add `numactl` inside the command.
-
-
----
-
-## Prerequisites
-
-- `numactl` - `apt install numactl`
-- `vmtouch` - `apt install vmtouch` (GAPBS graph preloading)
-- `perf` - stock `perf` from `linux-tools`; the four counters are read from `perf stat` text output. Point at a specific build with `PERF=/path/to/perf ./run-models.sh` (defaults to `perf` in `$PATH`)
-- `gnuplot` - required only for plotting, not for data collection
-- Workload binaries installed and paths configured in `run-models.sh`. The
-  GAPBS runs use the same `kron.sg` graph as `run/` - generate the paper's
-  scale-27 graph as described in
-  [`../run/README.md`](../run/README.md#getting-the-datasets)
-  ("Getting the datasets").
+- Tested locally: `fig2.py` on PACT's data, `aggregate.py` + `fig2.py` on
+  synthetic perf output, `DRY=1 collect.sh all`, shellcheck.
+- Not yet run on traquina. Unverified there: the `perf` event names on
+  Emerald Rapids for this event set, GAP's graph downloads (the road graph URL
+  is an old university server), PARSEC builds on Ubuntu 26.04.
