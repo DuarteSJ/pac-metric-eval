@@ -2,13 +2,15 @@
 # Collect PACT Fig. 2 counters on traquina: every workload x every tier, one
 # whole-run perf stat each, then aggregate into results/<tag>/models.csv.
 #
-#   ./collect.sh gapbs                 # a group from workloads.sh ...
+#   ./collect.sh all                   # a group from workloads.sh (gapbs,
+#                                      # gapbs-all, demeter, parsec, ycsb, gpt2)
 #   ./collect.sh bc-kron xsbench       # ... or workload names
 #   DRY=1 ./collect.sh all             # print the commands only
 #
 # Knobs (env):
 #   TIERS    index:label:node, in PACT's order (1:dram:0 2:numa:1 3:cxl:2)
 #   CPUS     workload cores, socket 0 (0-7); THREADS (8), as PACT
+#            (CLIENT_CPUS: the YCSB client's cores, 8-23)
 #   TIMEOUT  per run (60m); TAG results dir (date)
 # Existing raw files are skipped, so an interrupted collection resumes.
 set -euo pipefail
@@ -19,7 +21,6 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$HERE/workloads.sh"
 
 TIERS="${TIERS:-1:dram:0 2:numa:1 3:cxl:2}"
-CPUS="${CPUS:-0-7}"
 TIMEOUT="${TIMEOUT:-60m}"
 TAG="${TAG:-$(date +%Y%m%d)}"
 OUT="$HERE/results/$TAG"
@@ -84,15 +85,34 @@ for name in "${names[@]}"; do
 			run numactl --cpunodebind=0 --membind="$node" vmtouch -q -t -m 64G "$PRELOAD"
 		fi
 		# perf as root (paranoid 4); the workload as the invoking user.
-		perf_cmd=(sudo LC_ALL=C perf stat '-x,' -o "$raw.tmp" "${EVENTS[@]}" --
-			sudo -u "$USER" env OMP_NUM_THREADS="$THREADS" OMP_PROC_BIND=true OMP_PLACES=cores
-			timeout "$TIMEOUT" numactl --physcpubind="$CPUS" --membind="$node" "${CMD[@]}")
+		if [[ -z $ATTACH ]]; then
+			perf_cmd=(sudo LC_ALL=C perf stat '-x,' -o "$raw.tmp" "${EVENTS[@]}" --
+				sudo -u "$USER" env OMP_NUM_THREADS="$THREADS" OMP_PROC_BIND=true OMP_PLACES=cores
+				timeout "$TIMEOUT" numactl --physcpubind="$CPUS" --membind="$node" "${CMD[@]}")
+		else
+			# Server workload: count only the server, bound to CPUS and the
+			# tier, while the client (CMD, on CLIENT_CPUS) runs.
+			perf_cmd=(sudo LC_ALL=C perf stat '-x,' -o "$raw.tmp" "${EVENTS[@]}" -p @SERVER_PID@ --
+				sudo -u "$USER" timeout "$TIMEOUT" "${CMD[@]}")
+		fi
 		if [[ $DRY == 1 ]]; then
+			[[ -n $ATTACH ]] && echo "    ${ATTACH}_start $node"
 			echo "    ${perf_cmd[*]}"
+			[[ -n $ATTACH ]] && echo "    ${ATTACH}_stop"
 			continue
 		fi
 		rc=0
+		if [[ -n $ATTACH ]]; then
+			YCSB_LOG="$OUT/raw/${name}_$idx.server.log"
+			trap '"${ATTACH}_stop"' EXIT
+			"${ATTACH}_start" "$node"
+			perf_cmd=("${perf_cmd[@]/@SERVER_PID@/$SERVER_PID}")
+		fi
 		"${perf_cmd[@]}" > "$OUT/raw/${name}_$idx.log" 2>&1 || rc=$?
+		if [[ -n $ATTACH ]]; then
+			"${ATTACH}_stop"
+			trap - EXIT
+		fi
 		if [[ $rc -eq 0 ]]; then
 			mv "$raw.tmp" "$raw"
 		else

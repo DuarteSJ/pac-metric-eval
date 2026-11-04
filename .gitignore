@@ -6,3 +6,7 @@ parsec-3.0/
 parsec-3.0.tar.gz
 parsec-build-*.log
 __pycache__/
+parsec-run/
+redis/
+ycsb-0.17.0/
+venv-gpt2/
