@@ -2,16 +2,16 @@
 # Collect PACT Fig. 2 counters on traquina: every workload x every tier, one
 # whole-run perf stat each, then aggregate into results/<tag>/models.csv.
 #
-#   ./collect.sh all                   # a group from workloads.sh (gapbs,
-#                                      # gapbs-all, demeter, parsec, ycsb, gpt2)
-#   ./collect.sh bc-kron xsbench       # ... or workload names
+#   ./collect.sh all                   # every workload folder (workloads/)
+#   ./collect.sh gapbs spec            # some folders ...
+#   ./collect.sh bc-kron 505.mcf_r     # ... or workload names
 #   DRY=1 ./collect.sh all             # print the commands only
 #
 # Knobs (env):
 #   TIERS    index:label:node, in PACT's order (1:dram:0 2:numa:1 3:cxl:2)
 #   CPUS     workload cores, socket 0 (0-7); THREADS (8), as PACT
-#            (CLIENT_CPUS: the YCSB client's cores, 8-23)
 #   TIMEOUT  per run (60m); TAG results dir (date)
+#   per-folder knobs (GAPBS_GRAPHS, YCSB_RECORDS, ...): workloads/*/workload.sh
 # Existing raw files are skipped, so an interrupted collection resumes.
 set -euo pipefail
 export LC_ALL=C # perf prints decimal commas under e.g. pt_PT
@@ -103,6 +103,7 @@ for name in "${names[@]}"; do
 		fi
 		rc=0
 		if [[ -n $ATTACH ]]; then
+			# shellcheck disable=SC2034  # read by the workload folder's _start
 			YCSB_LOG="$OUT/raw/${name}_$idx.server.log"
 			trap '"${ATTACH}_stop"' EXIT
 			"${ATTACH}_start" "$node"

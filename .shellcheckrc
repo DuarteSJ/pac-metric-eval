@@ -1,0 +1,2 @@
+# Workload files are sourced by path variables shellcheck cannot follow.
+disable=SC1091
