@@ -1,125 +1,145 @@
 #!/usr/bin/env bash
-# Reproduce PACT Fig. 3 on bare metal: run a workload (workloads.sh) with its
-# memory on one tier while sampling core L2-MLP and CHA TOR-MLP counters every
-# INTERVAL ms (and PEBS samples, per profile). See README.md for the metrics.
+# Profile bc-kron for PACT Fig. 3 on traquina (2x Xeon Gold 6530, Emerald
+# Rapids, two CXL Type-3 expanders as CPU-less nodes 2 and 3): per-interval
+# L2MLP, TOR-MLP and the Bandwidth x Latency / 64B approximation, with all
+# workload memory on the slow tier.
 #
-# Env (defaults in brackets):
-#   MEM        cxl | dram | numa | interleave                [cxl]
-#              (numa: the other socket's DRAM; PACT's three single-tier
-#              configurations are dram, numa and cxl)
-#   CXL_NODE   CXL NUMA node (cpuless, socket 0)              [2]
-#   DRAM_NODE  DRAM NUMA node of socket 0                     [0]
-#   NUMA_NODE  DRAM NUMA node of the other socket             [1]
-#   CPUS       workload CPUs, on socket 0                      [0-7]
-#   WORKLOAD   workload name from workloads.sh                  [bc]
-#   TRIALS     bc trials (runtime)                             [8]
-#   TIMEOUT    stop the workload after this long (timeout(1))  [20m]
-#   INTERVAL   perf sampling interval in ms                    [100]
-#   PROFILE    counter profile (counters.py: python3 counters.py
-#              profiles). One core MLP estimator per run fits the PMU;
-#              "pebs" samples loads (perf record) for the slow-tier
-#              bandwidth x latency estimate (pebs.csv)            [l2]
-#   PEBS_L3M_PERIOD / PEBS_LAT_PERIOD  sample periods      [2003 / 101]
-#   LDLAT      load-latency threshold in cycles                [60]
-#   BIN        directory with the workload binaries and datasets
-#              (workloads.sh)       [~/demeter-criticality/bin]
+#   ./run.sh                 # slow tier = CXL (node 2)
+#   TIER=numa ./run.sh       # slow tier = remote-socket DDR (node 1)
+#
+# Knobs (env):
+#   TIER        cxl | numa                                (cxl)
+#   CPUS        workload cores, physical, socket 0        (0-7)
+#   THREADS     OMP threads                               (8)
+#   INTERVAL_MS perf sampling interval; PACT uses 20 ms   (20)
+#   GRAPH       .sg graph                                 (gapbs/graphs/kron27.sg)
+#   BC_ARGS     bc arguments                              (-i4 -n4)
+#   TIMEOUT     workload timeout                          (30m)
+#   TAG         run directory prefix                      ($TIER)
+#
+# Needs sudo for perf (system-wide uncore).
 set -euo pipefail
-SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
-MEM="${MEM:-cxl}"
-CXL_NODE="${CXL_NODE:-2}"
-DRAM_NODE="${DRAM_NODE:-0}"
-NUMA_NODE="${NUMA_NODE:-1}"
-CPUS="${CPUS:-0-7}"
-TRIALS="${TRIALS:-8}"
-INTERVAL="${INTERVAL:-100}"
-PROFILE="${PROFILE:-l2}"
-PEBS=$(python3 "$SELF/counters.py" pebs "$PROFILE" && echo 1 || echo 0)
-PEBS_L3M_PERIOD="${PEBS_L3M_PERIOD:-2003}"
-PEBS_LAT_PERIOD="${PEBS_LAT_PERIOD:-101}"
-LDLAT="${LDLAT:-60}"
-WORKLOAD="${WORKLOAD:-bc}"
-
-# SLOW_NODES: the tier PEBS samples are attributed to ("slow" in pebs.csv):
-# the bound node in single-tier runs, the CXL node when interleaved.
-case "$MEM" in
-cxl) MEMARGS=(--membind="$CXL_NODE") SLOW_NODES="$CXL_NODE" ;;
-dram) MEMARGS=(--membind="$DRAM_NODE") SLOW_NODES="$DRAM_NODE" ;;
-numa) MEMARGS=(--membind="$NUMA_NODE") SLOW_NODES="$NUMA_NODE" ;;
-interleave) MEMARGS=(--interleave="$DRAM_NODE,$CXL_NODE") SLOW_NODES="$CXL_NODE" ;;
-*) echo "MEM must be cxl, dram, numa or interleave" >&2; exit 1 ;;
-esac
-THREADS=$(numactl -C "$CPUS" nproc)
-source "$SELF/workloads.sh"
-workload_cmd "$WORKLOAD" || exit 1
-
-OUT="$SELF/runs/$(date +%Y%m%dT%H%M%S)-$WORKLOAD-$MEM-$PROFILE"
-mkdir -p "$OUT"
-
-# Counters come from counters.py (one perf -e argument per line).
-CORE_E=() UNCORE_E=()
-while read -r e; do CORE_E+=(-e "$e"); done < <(python3 "$SELF/counters.py" core "$PROFILE")
-while read -r e; do UNCORE_E+=(-e "$e"); done < <(python3 "$SELF/counters.py" uncore "$PROFILE")
-
-cat >"$OUT/meta.txt" <<EOF
-workload=$WORKLOAD mem=$MEM membind=${MEMARGS[*]} cpus=$CPUS threads=$THREADS trials=$TRIALS
-interval_ms=$INTERVAL
-cmd=${CMD[*]}
-host=$(hostname) kernel=$(uname -r)
-cha_per_socket=$(ls -d /sys/bus/event_source/devices/uncore_cha_* | wc -l)
-profile=$PROFILE slow_nodes=$SLOW_NODES pebs=$PEBS pebs_l3m_period=$PEBS_L3M_PERIOD pebs_lat_period=$PEBS_LAT_PERIOD ldlat=$LDLAT
-EOF
-
-if [ "$PEBS" = 1 ]; then
-	# Physical address ranges per NUMA node (node start end, hex), so
-	# pebs_intervals.py can tell the tier of each sample.
-	BS=$((16#$(cat /sys/devices/system/memory/block_size_bytes)))
-	for n in /sys/devices/system/node/node[0-9]*; do
-		for m in "$n"/memory[0-9]*; do
-			b=${m##*/memory}
-			printf "%s %x %x\n" "${n##*/node}" $((b * BS)) $(((b + 1) * BS))
-		done
-	done >"$OUT/nodemap.txt"
-fi
-
+# perf prints decimal commas under e.g. pt_PT, which breaks -x, output.
 export LC_ALL=C
-# The NMI watchdog holds a core counter; free it for the run, restore after.
-NMI_WD=$(cat /proc/sys/kernel/nmi_watchdog)
-sudo sysctl -q kernel.nmi_watchdog=0
-trap 'sudo sysctl -q kernel.nmi_watchdog="$NMI_WD"' EXIT
-# CLOCK_MONOTONIC at perf stat start: perf record -k CLOCK_MONOTONIC stamps
-# samples on the same clock, so they can be binned into the stat intervals.
-echo "mono_start=$(python3 -c 'import time; print(time.clock_gettime(time.CLOCK_MONOTONIC))')" >>"$OUT/meta.txt"
-if [ "$PEBS" = 1 ]; then
-	# L3-miss loads (all misses: slow-tier request rate) and load latency
-	# (per-load latency in the weight field), both with physical addresses.
-	# No data-source field, so the load-latency event needs no aux event.
-	perf record -q -C "$CPUS" -k CLOCK_MONOTONIC --phys-data -W -o "$OUT/pebs.data" \
-		-e "cpu/event=0xd1,umask=0x20,period=$PEBS_L3M_PERIOD,name=pebs_l3m/pp" \
-		-e "cpu/event=0xcd,umask=0x1,ldlat=$LDLAT,period=$PEBS_LAT_PERIOD,name=pebs_lat/pp" &
-	PEBS_PID=$!
-fi
-perf stat -x, -I "$INTERVAL" -C "$CPUS" "${CORE_E[@]}" -o "$OUT/core.csv" &
-CORE_PID=$!
-perf stat -x, -I "$INTERVAL" -a --per-socket "${UNCORE_E[@]}" -o "$OUT/uncore.csv" &
-UNCORE_PID=$!
-echo "perf_start_epoch=$(date +%s.%N)" >>"$OUT/meta.txt"
-sleep 1
 
-echo "[fig3] $WORKLOAD $MEM $PROFILE: CPUs $CPUS ($THREADS threads), output $OUT"
-echo "workload_start_epoch=$(date +%s.%N)" >>"$OUT/meta.txt"
-RC=0  # set -e must not skip stopping perf if the workload fails
-OMP_NUM_THREADS="$THREADS" timeout --signal=INT --kill-after=1m "${TIMEOUT:-20m}" \
-	numactl -C "$CPUS" "${MEMARGS[@]}" \
-	"${CMD[@]}" >"$OUT/workload.log" 2>&1 || RC=$?
-echo "workload_rc=$RC workload_end_epoch=$(date +%s.%N)" >>"$OUT/meta.txt"
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+GAPBS_DIR="${GAPBS_DIR:-$HERE/gapbs}"
+GRAPH="${GRAPH:-$GAPBS_DIR/graphs/kron27.sg}"
+TIER="${TIER:-cxl}"
+CPUS="${CPUS:-0-7}"
+THREADS="${THREADS:-8}"
+INTERVAL_MS="${INTERVAL_MS:-20}"
+BC_ARGS="${BC_ARGS:--i4 -n4}"
+TIMEOUT="${TIMEOUT:-30m}"
+TAG="${TAG:-$TIER}"
+OUT="${OUT:-$HERE/runs/$TAG-$(date +%Y%m%d-%H%M%S)}"
+CPU_SOCKET=0
 
-sleep 1
-kill -INT "$CORE_PID" "$UNCORE_PID" ${PEBS_PID:-}
-wait "$CORE_PID" "$UNCORE_PID" ${PEBS_PID:-} 2>/dev/null || true
-if [ "$PEBS" = 1 ]; then
-	python3 "$SELF/pebs_intervals.py" "$OUT" && rm -f "$OUT/pebs.data"
-fi
-tail -3 "$OUT/workload.log"
-cp "$SELF/counters.py" "$OUT/"  # what was recorded, for later reference
-echo "[fig3] done: python3 $SELF/plot.py $OUT"
+[[ -x $GAPBS_DIR/bc ]] || { echo "no $GAPBS_DIR/bc, run ./setup.sh" >&2; exit 1; }
+[[ -f $GRAPH ]] || { echo "no graph $GRAPH, run ./setup.sh" >&2; exit 1; }
+
+# --- slow tier ----------------------------------------------------------------
+# TOR umask (incl. umask_ext) selects LLC-miss demand reads to that tier:
+#   UNC_CHA_TOR_*.IA_MISS_DRD_CXL_ACC   0x10c8178201  (counts Type-3 memory here;
+#                                                      _CXL_EXP_LOCAL stays 0)
+#   UNC_CHA_TOR_*.IA_MISS_DRD_REMOTE    0xc8177e01
+# Slow-tier bandwidth (all traffic incl. prefetch and writebacks):
+#   cxl:  host CXL.mem link, UNC_CXLCM_RXC_PACK_BUF_INSERTS.MEM_DATA = one per
+#         64B line read, UNC_CXLCM_TXC_PACK_BUF_INSERTS.MEM_DATA = one per 16B
+#         slot written (checked against a 4 GB read/zero sweep). Counted on S0.
+#   numa: socket-1 DRAM, UNC_M_CAS_COUNT.RD / .WR, 64B each.
+case $TIER in
+cxl)
+	MEMNODE=2
+	TOR_UMASK=0x10c8178201
+	BW_SOCKET=0
+	BW_RD="uncore_cxlcm/event=0x41,umask=0x10,name=bw_rd/"
+	BW_WR="uncore_cxlcm/event=0x02,umask=0x10,name=bw_wr/"
+	RD_BYTES=64 WR_BYTES=16
+	;;
+numa)
+	MEMNODE=1
+	TOR_UMASK=0xc8177e01
+	BW_SOCKET=1
+	BW_RD="uncore_imc/event=0x05,umask=0xcf,name=bw_rd/"
+	BW_WR="uncore_imc/event=0x05,umask=0xf0,name=bw_wr/"
+	RD_BYTES=64 WR_BYTES=64
+	;;
+*) echo "TIER must be cxl or numa" >&2; exit 1 ;;
+esac
+
+# --- events -------------------------------------------------------------------
+# TOR-MLP, Table 1 / Alg. 1 of the paper, summed over the CPU socket's CHAs:
+#   T1 = TOR_OCCUPANCY (0x36), pinned to counter 0 of each CHA
+#   T2 = COUNTER0_OCCUPANCY (0x1f) thresh=1: cycles with T1 >= 1. A second 0x36
+#        with thresh=1 would also need counter 0 and get multiplexed.
+#   TOR_INSERTS (0x35) gives latency = T1 / inserts in CHA cycles.
+# L2MLP = Info_Memory_Latency_Load_L2_MLP =
+#   OFFCORE_REQUESTS_OUTSTANDING.DATA_RD / .CYCLES_WITH_DATA_RD
+EVENTS=(
+	"uncore_cha/event=0x36,umask=$TOR_UMASK,name=tor_occ/"
+	"uncore_cha/event=0x1f,thresh=1,name=tor_cyc/"
+	"uncore_cha/event=0x35,umask=$TOR_UMASK,name=tor_ins/"
+	"uncore_cha/event=0x01,name=cha_clk/"
+	"$BW_RD"
+	"$BW_WR"
+	"cpu/event=0x20,umask=0x08,name=oro_data_rd/"
+	"cpu/event=0x20,umask=0x08,cmask=1,name=oro_cyc_data_rd/"
+)
+EV=$(IFS=,; echo "${EVENTS[*]}")
+
+# Count on the workload CPUs plus each socket's uncore reader CPU (CHA cpumask)
+# only: core events on all 128 CPUs make perf take ~45 ms per 20 ms interval.
+expand() {
+	local p parts
+	IFS=, read -ra parts <<< "$1"
+	for p in "${parts[@]}"; do
+		if [[ $p == *-* ]]; then seq "${p%-*}" "${p#*-}"; else echo "$p"; fi
+	done
+}
+PERF_CPUS=$({ expand "$CPUS"; expand "$(cat /sys/bus/event_source/devices/uncore_cha_0/cpumask)"; } | sort -nu | paste -sd,)
+
+mkdir -p "$OUT"
+{
+	echo "date        $(date -Is)"
+	echo "host        $(hostname) $(uname -r)"
+	echo "cpu         $(lscpu | sed -n 's/^Model name: *//p')"
+	echo "tier        $TIER"
+	echo "memnode     $MEMNODE"
+	echo "cpus        $CPUS"
+	echo "perf_cpus   $PERF_CPUS"
+	echo "cpu_socket  $CPU_SOCKET"
+	echo "bw_socket   $BW_SOCKET"
+	echo "rd_bytes    $RD_BYTES"
+	echo "wr_bytes    $WR_BYTES"
+	# uncore_cha_N are per-socket box indices, so this is CHAs per socket.
+	echo "nr_cha      $(find /sys/bus/event_source/devices -maxdepth 1 -name 'uncore_cha_*' | wc -l)"
+	echo "graph       $GRAPH"
+	echo "bc_args     $BC_ARGS"
+	echo "threads     $THREADS"
+	echo "interval_ms $INTERVAL_MS"
+	echo "thp         $(cat /sys/kernel/mm/transparent_hugepage/enabled)"
+	echo "events      $EV"
+	echo
+	numactl -H
+} > "$OUT/meta.txt"
+
+# Snapshot placement once the graph is loaded: everything should be on MEMNODE.
+(
+	sleep 30
+	pid=$(pgrep -n -x bc || true)
+	[[ -n $pid ]] && numastat -p "$pid" > "$OUT/numastat.txt" 2>&1
+) &
+
+echo "profiling bc-kron, slow tier $TIER (node $MEMNODE) -> $OUT"
+# perf runs as root (uncore); the workload runs as the invoking user.
+# perf -I timestamps start at workload exec.
+# shellcheck disable=SC2086
+sudo LC_ALL=C perf stat -C "$PERF_CPUS" --per-socket -I "$INTERVAL_MS" -x, -o "$OUT/perf.csv" -e "$EV" -- \
+	sudo -u "$USER" env OMP_NUM_THREADS="$THREADS" OMP_PROC_BIND=true OMP_PLACES=cores \
+	timeout "$TIMEOUT" numactl --physcpubind="$CPUS" --membind="$MEMNODE" \
+	"$GAPBS_DIR/bc" -f "$GRAPH" $BC_ARGS 2>&1 | tee "$OUT/bc.log"
+
+wait
+echo "done: $OUT"
+echo "plot: python3 $HERE/plot.py $OUT"
