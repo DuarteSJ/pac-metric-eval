@@ -17,8 +17,8 @@ set -euo pipefail
 export LC_ALL=C # perf prints decimal commas under e.g. pt_PT
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=workloads.sh
-source "$HERE/workloads.sh"
+# shellcheck source=../workloads.sh
+source "$HERE/../workloads.sh"
 
 TIERS="${TIERS:-1:dram:0 2:numa:1 3:cxl:2}"
 TIMEOUT="${TIMEOUT:-60m}"

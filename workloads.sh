@@ -6,8 +6,8 @@
 #                         for "all"
 #   workload_cmd WORKLOAD sets CMD, PRELOAD and ATTACH for one workload
 
-HERE="${HERE:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
-WORKLOADS_DIR="$HERE/workloads"
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+WORKLOADS_DIR="$REPO_DIR/workloads"
 # shellcheck source=workloads/common.sh
 source "$WORKLOADS_DIR/common.sh"
 
