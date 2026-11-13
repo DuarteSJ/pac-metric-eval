@@ -1,4 +1,4 @@
-# PACT Fig. 3 replication
+# fig3: PACT Fig. 3 replication
 
 Replicates Figure 3 ("Per-tier MLP") of *PACT: A Criticality-First Design for
 Tiered Memory* (ASPLOS '26): bc-kron with its memory on the slow tier, and
@@ -36,19 +36,15 @@ Counting core events on all 128 CPUs stretches 20 ms intervals to ~45 ms.
 
 ## Run
 
-On traquina, in `~/fig3`:
+On traquina, from the repo root:
 
 ```sh
-./setup.sh                          # GAPBS + kron27.sg (paper graph, ~18 GB)
-./run.sh                            # -> runs/cxl-<date>/
-TIER=numa ./run.sh                  # remote-DDR slow tier, for comparison
-python3 plot.py runs/cxl-<date>     # -> fig3.pdf/png, metrics.csv, summary.txt
-```
-
-Quick check on the existing scale-26 graph:
-
-```sh
-GRAPH=~/demeter-criticality/bin/kron26.sg BC_ARGS="-i1 -n1" TAG=smoke ./run.sh
+GAPBS_GRAPHS=kron ./setup.sh gapbs          # GAPBS + the paper's kron graph (~17 GB), shared with fig2
+cd fig3
+./run.sh                                    # -> runs/cxl-<date>/
+TIER=numa ./run.sh                          # remote-DDR slow tier, for comparison
+CPUS=0-31 THREADS=32 TAG=cxl-32t ./run.sh   # one thread per CHA
+python3 plot.py runs/cxl-<date>             # -> fig3.pdf/png, metrics.csv, summary.txt
 ```
 
 Check `summary.txt`:
@@ -58,7 +54,7 @@ Check `summary.txt`:
 Fetch results locally:
 
 ```sh
-rsync -a traquina:fig3/runs/ runs/
+rsync -a traquina:pac-metric-eval/fig3/runs/ runs/
 ```
 
 Knobs are listed in the `run.sh` header: `TIER`, `CPUS`, `THREADS`,
@@ -81,15 +77,17 @@ Skylake ran 8 threads on 10 CHAs. traquina has 32 CHAs per socket, so:
 
 | run | threads / CHAs | L2MLP | TOR-MLP | L2MLP ÷ TOR-MLP (median, IQR) | r(TOR, L2) |
 |---|---|---|---|---|---|
-| `cxl-20261029-121309` | 8 / 32 | 6.83 | 1.77 | 3.88 (3.57-4.07) | 0.865 |
-| `cxl-32t-20261029-133439` | 32 / 32 | 7.10 | 5.89 | 1.22 (1.14-1.26) | 0.889 |
-| `numa-8t-20261029-140041` | 8 / 32 | 6.85 | 1.73 | 3.98 (3.63-4.18) | 0.641 |
-| `numa-32t-20261029-135913` | 32 / 32 | 6.36 | 4.14 | 1.48 (1.36-1.56) | 0.393 |
+| `cxl-8t-demand-20261113-111438` | 8 / 32 | 5.04 | 1.77 | 2.84 (2.56-3.05) | 0.918 |
+| `cxl-32t-demand-20261113-111144` | 32 / 32 | 5.23 | 5.89 | 0.89 (0.85-0.93) | 0.974 |
+| `numa-8t-demand-20261113-112133` | 8 / 32 | 4.98 | 1.75 | 2.85 (2.54-3.09) | 0.882 |
+| `numa-32t-demand-20261113-112011` | 32 / 32 | 4.58 | 4.20 | 1.10 (1.00-1.15) | 0.928 |
 
-The thread/CHA effect is the same on both tiers. On NUMA (remote DDR, 197-220 ns,
-19-55 GB/s), TOR-MLP stays flat during the slow L2MLP decays after each phase
-change, which the gray memory-side BW x Latency does follow. That points to
-non-demand (prefetch) traffic, which TOR's DRd filter excludes. Not yet verified.
+L2MLP here is the paper's [7], demand loads only. The same runs also record
+the Emerald Rapids definition of that metric (`DATA_RD`, adding L2
+prefetches; `l2mlp_all` in `metrics.csv`), which the first runs plotted: it
+is ~35% higher (e.g. 7.05 vs 5.23 on CXL at 32 threads; ratios 1.22-3.91),
+and on NUMA it tracked TOR-MLP poorly (r = 0.39 at 32 threads), because it
+follows prefetch traffic that TOR's demand-read filter excludes.
 
 Steady state only, i.e. after bc's graph load, in 1 s bins (`summary.txt`).
 During the load, L2MLP is high from reading the `.sg` file out of page cache

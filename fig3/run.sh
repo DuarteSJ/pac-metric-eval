@@ -12,7 +12,7 @@
 #   CPUS        workload cores, physical, socket 0        (0-7)
 #   THREADS     OMP threads                               (8)
 #   INTERVAL_MS perf sampling interval; PACT uses 20 ms   (20)
-#   GRAPH       .sg graph                                 (gapbs/graphs/kron27.sg)
+#   GRAPH       .sg graph   (../workloads/gapbs/graphs/kron.sg: GAP kron, -g27 -k16)
 #   BC_ARGS     bc arguments                              (-i4 -n4)
 #   TIMEOUT     workload timeout                          (30m)
 #   TAG         run directory prefix                      ($TIER)
@@ -23,8 +23,8 @@ set -euo pipefail
 export LC_ALL=C
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-GAPBS_DIR="${GAPBS_DIR:-$HERE/gapbs}"
-GRAPH="${GRAPH:-$GAPBS_DIR/graphs/kron27.sg}"
+GAPBS_DIR="${GAPBS_DIR:-$HERE/../workloads/gapbs/src}"
+GRAPH="${GRAPH:-$HERE/../workloads/gapbs/graphs/kron.sg}"
 TIER="${TIER:-cxl}"
 CPUS="${CPUS:-0-7}"
 THREADS="${THREADS:-8}"
@@ -35,8 +35,8 @@ TAG="${TAG:-$TIER}"
 OUT="${OUT:-$HERE/runs/$TAG-$(date +%Y%m%d-%H%M%S)}"
 CPU_SOCKET=0
 
-[[ -x $GAPBS_DIR/bc ]] || { echo "no $GAPBS_DIR/bc, run ./setup.sh" >&2; exit 1; }
-[[ -f $GRAPH ]] || { echo "no graph $GRAPH, run ./setup.sh" >&2; exit 1; }
+[[ -x $GAPBS_DIR/bc ]] || { echo "no $GAPBS_DIR/bc, run ../setup.sh gapbs" >&2; exit 1; }
+[[ -f $GRAPH ]] || { echo "no graph $GRAPH, run ../setup.sh gapbs" >&2; exit 1; }
 
 # --- slow tier ----------------------------------------------------------------
 # TOR umask (incl. umask_ext) selects LLC-miss demand reads to that tier:

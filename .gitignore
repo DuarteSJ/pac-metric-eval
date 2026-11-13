@@ -14,3 +14,4 @@ workloads/ycsb/redis/
 workloads/ycsb/ycsb/
 workloads/gpt2/venv/
 workloads/gpt2/hf/
+fig3/runs/
