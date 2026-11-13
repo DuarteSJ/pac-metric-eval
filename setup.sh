@@ -5,7 +5,7 @@
 #                        kron road; GAPBS_GRAPHS="kron urand twitter road web"
 #                        for gapbs-all) in the .sg / .wsg / U.sg forms the runs
 #                        need, with GAP's own recipes. kron is generated (or
-#                        linked from ~/fig3 if there), road downloaded.
+#                        linked from ~/pact-fig3 if there), road downloaded.
 #   ./setup.sh parsec    PARSEC 3.0, built per package, plus a run directory
 #                        per package with its native input unpacked.
 #   ./setup.sh ycsb      Redis (built from source) and the YCSB Redis client
@@ -27,7 +27,7 @@ setup_gapbs() {
 	make -C "$GAPBS_DIR" -j"$(nproc)"
 	mkdir -p "$GRAPH_DIR"
 	# pact-fig3 generated the same kron graph (GAP's -g27 -k16).
-	local fig3_kron="$HOME/fig3/gapbs/graphs/kron27.sg"
+	local fig3_kron="$HOME/pact-fig3/gapbs/graphs/kron27.sg"
 	if [[ $GAPBS_GRAPHS == *kron* && -f $fig3_kron && ! -e $GRAPH_DIR/kron.sg ]]; then
 		ln -s "$fig3_kron" "$GRAPH_DIR/kron.sg"
 	fi
