@@ -74,8 +74,12 @@ esac
 #   T2 = COUNTER0_OCCUPANCY (0x1f) thresh=1: cycles with T1 >= 1. A second 0x36
 #        with thresh=1 would also need counter 0 and get multiplexed.
 #   TOR_INSERTS (0x35) gives latency = T1 / inserts in CHA cycles.
-# L2MLP = Info_Memory_Latency_Load_L2_MLP =
-#   OFFCORE_REQUESTS_OUTSTANDING.DATA_RD / .CYCLES_WITH_DATA_RD
+# L2MLP, the paper's [7] (Info_Memory_Latency_Load_L2_MLP, SKX definition):
+#   OFFCORE_REQUESTS_OUTSTANDING.DEMAND_DATA_RD / .CYCLES_WITH_DEMAND_DATA_RD
+#   (umask 0x01, demand loads only).
+# Also recorded: the EMR definition of the same-named Intel metric, DATA_RD /
+#   CYCLES_WITH_DATA_RD (umask 0x08), which adds L2 prefetches.
+# Each T1/T2 pair is a perf group, so both see the same time slices.
 EVENTS=(
 	"uncore_cha/event=0x36,umask=$TOR_UMASK,name=tor_occ/"
 	"uncore_cha/event=0x1f,thresh=1,name=tor_cyc/"
@@ -83,8 +87,8 @@ EVENTS=(
 	"uncore_cha/event=0x01,name=cha_clk/"
 	"$BW_RD"
 	"$BW_WR"
-	"cpu/event=0x20,umask=0x08,name=oro_data_rd/"
-	"cpu/event=0x20,umask=0x08,cmask=1,name=oro_cyc_data_rd/"
+	"{cpu/event=0x20,umask=0x01,name=oro_demand_rd/,cpu/event=0x20,umask=0x01,cmask=1,name=oro_cyc_demand_rd/}"
+	"{cpu/event=0x20,umask=0x08,name=oro_data_rd/,cpu/event=0x20,umask=0x08,cmask=1,name=oro_cyc_data_rd/}"
 )
 EV=$(IFS=,; echo "${EVENTS[*]}")
 

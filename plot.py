@@ -9,7 +9,11 @@ Bandwidth x Latency / 64B (gray). Writes fig3.pdf/.png, metrics.csv and
 summary.txt into the run directory.
 
 Metrics are ratios of summed counters, so binning never averages ratios:
-  L2MLP    = oro_data_rd / oro_cyc_data_rd                   (workload cores)
+  L2MLP    = oro_demand_rd / oro_cyc_demand_rd               (workload cores)
+             the paper's [7], SKX Info_Memory_Latency_Load_L2_MLP: demand
+             loads only. Runs without these events fall back to l2mlp_all.
+  l2mlp_all = oro_data_rd / oro_cyc_data_rd: also L2 prefetches (EMR's
+             definition of the same metric; metrics.csv and summary only)
   TOR-MLP  = tor_occ / tor_cyc                               (CPU socket CHAs)
   latency  = tor_occ / tor_ins CHA cycles, / CHA clock -> ns (CPU socket CHAs)
   BW       = bw_rd * rd_bytes [+ bw_wr * wr_bytes] / dt      (slow tier)
@@ -25,7 +29,8 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
-CPU_EVENTS = ("oro_data_rd", "oro_cyc_data_rd", "tor_occ", "tor_cyc", "tor_ins", "cha_clk")
+CPU_EVENTS = ("oro_demand_rd", "oro_cyc_demand_rd", "oro_data_rd", "oro_cyc_data_rd",
+              "tor_occ", "tor_cyc", "tor_ins", "cha_clk")
 MEM_EVENTS = ("bw_rd", "bw_wr")
 
 
@@ -92,9 +97,13 @@ def metrics(r, meta, writes):
     if writes:
         nbytes += r["bw_wr"] * int(meta["wr_bytes"])
     bw = div(nbytes, r["dt"])                             # B/s
+    demand = div(r["oro_demand_rd"], r["oro_cyc_demand_rd"])
+    every = div(r["oro_data_rd"], r["oro_cyc_data_rd"])
     return {
         "t": r["t"],
-        "l2mlp": div(r["oro_data_rd"], r["oro_cyc_data_rd"]),
+        "l2mlp": every if math.isnan(demand) else demand,
+        "l2mlp_demand": demand,
+        "l2mlp_all": every,
         "tor_mlp": div(r["tor_occ"], r["tor_cyc"]),
         "lat_ns": lat_s * 1e9,
         "bw_gbs": bw / 1e9,
@@ -221,12 +230,17 @@ def main():
     ratio = [m["l2mlp"] / m["tor_mlp"] for m in steady
              if not math.isnan(m["l2mlp"]) and not math.isnan(m["tor_mlp"]) and m["tor_mlp"]]
     rq = [percentile(ratio, q) for q in (0.25, 0.5, 0.75)]
+    ratio_all = [m["l2mlp_all"] / m["tor_mlp"] for m in steady
+                 if not math.isnan(m["l2mlp_all"]) and not math.isnan(m["tor_mlp"]) and m["tor_mlp"]]
+    variant = ("demand loads (paper's [7])" if not math.isnan(tot["l2mlp_demand"])
+               else "DATA_RD incl. L2 prefetch (run has no demand events)")
     threads = meta.get("threads", "?")
     summary = "\n".join([
         f"run            {args.run}",
         f"slow tier      {meta['tier']} (node {meta['memnode']})",
         f"duration       {end:.1f} s, {len(recs)} intervals of {meta['interval_ms']} ms",
-        f"L2MLP          {tot['l2mlp']:.2f} (whole run)",
+        f"L2MLP          {tot['l2mlp']:.2f} (whole run), {variant}",
+        f"L2MLP all      {tot['l2mlp_all']:.2f} (DATA_RD: demand + L2 prefetch)",
         f"TOR-MLP        {tot['tor_mlp']:.2f}",
         f"BWxLat/64B     {tot['approx_mlp']:.2f}  (BW {'rd+wr' if writes else 'rd'})",
         f"slow-tier lat  {tot['lat_ns']:.0f} ns (TOR occ/inserts, demand reads)",
@@ -242,7 +256,10 @@ def main():
         f"  pearson(TOR-MLP, L2MLP)    {pearson(col(steady, 'tor_mlp'), col(steady, 'l2mlp')):.3f}",
         f"  pearson(BWxLat, TOR-MLP)   {pearson(col(steady, 'approx_mlp'), col(steady, 'tor_mlp')):.3f}",
         f"  L2MLP / TOR-MLP            median {rq[1]:.2f}  IQR {rq[0]:.2f}-{rq[2]:.2f}",
-        f"  means                      L2MLP {mean(col(steady, 'l2mlp')):.2f}  TOR-MLP "
+        f"  L2MLP all / TOR-MLP        median {percentile(ratio_all, 0.5):.2f}"
+        f"  pearson(TOR-MLP, L2MLP all) {pearson(col(steady, 'tor_mlp'), col(steady, 'l2mlp_all')):.3f}",
+        f"  means                      L2MLP {mean(col(steady, 'l2mlp')):.2f}  L2MLP all "
+        f"{mean(col(steady, 'l2mlp_all')):.2f}  TOR-MLP "
         f"{mean(col(steady, 'tor_mlp')):.2f}  BWxLat {mean(col(steady, 'approx_mlp')):.2f}",
         f"zoom {z0:g}-{z1:g}s     TOR-MLP mean {mean(col(zoom, 'tor_mlp')):.2f}, "
         f"L2MLP mean {mean(col(zoom, 'l2mlp')):.2f}",
