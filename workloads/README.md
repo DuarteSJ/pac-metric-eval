@@ -5,7 +5,7 @@ One folder per suite or project. Each has the same three files:
 | file | role |
 |---|---|
 | `README.md` | what it is, where the code comes from, inputs, threads |
-| `setup.sh` | fetch and build into the folder (run once on traquina) |
+| `setup.sh` | fetch and build into the folder |
 | `workload.sh` | the workload names and how each one runs (sourced by `../workloads.sh`) |
 
 Code, binaries and inputs land inside the folder (`src/`, `graphs/`, `run/`,
