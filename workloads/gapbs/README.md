@@ -13,7 +13,7 @@ the 5 GAP graphs. PACT used all 30 (`bc-kron` ... `tc-web`).
 
 | graph | source | size |
 |---|---|---|
-| kron | generated, `-g27 -k16` (linked from `~/pact-fig3` if there) | 134M vertices, 2.1B edges |
+| kron | generated, `-g27 -k16` (also fig3's graph) | 134M vertices, 2.1B edges |
 | urand | generated, `-u27 -k16` | 134M vertices, 2.1B edges |
 | road | USA road network (DIMACS), downloaded | 24M vertices, 58M edges |
 | twitter | Twitter follower graph, downloaded | 62M vertices, 1.5B edges |

@@ -7,5 +7,5 @@ source "$WORKLOADS_DIR/common.sh"
 source "$WORKLOADS_DIR/liblinear/workload.sh"
 
 fetch_demeter_workload liblinear "$LIBLINEAR_HOME/src"
-make -C "$LIBLINEAR_HOME/src"  # also downloads kdda (KDD Cup 2010, ~2.5 GB compressed)
+make -C "$LIBLINEAR_HOME/src"  # also downloads kdda (KDD Cup 2010, 274 MB .bz2, ~2.5 GB unpacked)
 ls -la "$LIBLINEAR_HOME/src/train"
